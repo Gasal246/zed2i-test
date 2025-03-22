@@ -5,17 +5,24 @@ import socket
 import cv2
 
 # UDP configuration
-UDP_IP = "127.0.0.1"
+# UDP_IP = "127.0.0.1"
+UDP_IP = "172.16.1.54"
 UDP_PORT = 5005
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-# Screen dimensions
-SCREEN_WIDTH = 1.0
-SCREEN_HEIGHT = 1.5
+# Screen configuration (adjust these based on your physical setup)
+SCREEN_WIDTH = 3.0    # Physical screen width in meters
+SCREEN_HEIGHT = 3.0   # Physical screen height in meters
 SCREEN_PIXEL_WIDTH = 1920
 SCREEN_PIXEL_HEIGHT = 1080
 
-CAMERA_TO_SCREEN_TRANSFORM = np.eye(4)
+# Camera to screen transformation matrix (example values - adjust according to your setup)
+CAMERA_TO_SCREEN_TRANSFORM = np.array([
+    [1, 0, 0, 0],     # X axis
+    [0, -1, 0, 0.85], # Y axis (flipped and offset)
+    [0, 0, 1, 2.0],   # Z axis (distance from camera)
+    [0, 0, 0, 1]
+])
 
 def transform_to_screen_coordinates(position_3d):
     pos_homogeneous = np.append(position_3d, 1)
@@ -24,15 +31,24 @@ def transform_to_screen_coordinates(position_3d):
 
 def map_3d_to_screen_pixel(position_3d):
     pos_screen = transform_to_screen_coordinates(position_3d)
-    x_pixel = (pos_screen[0] / SCREEN_WIDTH + 0.5) * SCREEN_PIXEL_WIDTH
-    y_pixel = (1 - (pos_screen[1] / SCREEN_HEIGHT + 0.5)) * SCREEN_PIXEL_HEIGHT
-    x_pixel = max(0, min(SCREEN_PIXEL_WIDTH - 1, x_pixel))
-    y_pixel = max(0, min(SCREEN_PIXEL_HEIGHT - 1, y_pixel))
-    return (x_pixel, y_pixel)
+    
+    # Convert to screen percentages
+    x_percent = (pos_screen[0] / SCREEN_WIDTH) + 0.5
+    y_percent = (-pos_screen[1] / SCREEN_HEIGHT) + 0.5
+    
+    # Convert to pixel coordinates
+    x_pixel = x_percent * SCREEN_PIXEL_WIDTH
+    y_pixel = y_percent * SCREEN_PIXEL_HEIGHT
+    
+    # Clamp values to screen boundaries
+    x_pixel = np.clip(x_pixel, 0, SCREEN_PIXEL_WIDTH - 1)
+    y_pixel = np.clip(y_pixel, 0, SCREEN_PIXEL_HEIGHT - 1)
+    
+    return (int(x_pixel), int(y_pixel))
 
 def main():
     init_params = sl.InitParameters()
-    init_params.camera_resolution = sl.RESOLUTION.HD720
+    init_params.camera_resolution = sl.RESOLUTION.HD1080
     init_params.coordinate_units = sl.UNIT.METER
     init_params.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
 
@@ -68,15 +84,16 @@ def main():
                     bb = body.bounding_box_2d.reshape((-1, 2)).astype(np.int32)
                     cv2.polylines(img, [bb], isClosed=True, color=(0, 255, 0), thickness=2)
                     
-                    # Body position text
-                    body_pos = body.position
-                    body_text = f"Body: {body_pos[0]:.2f}, {body_pos[1]:.2f}, {body_pos[2]:.2f}"
+                    # Modified: Show distance from screen instead of body coordinates
+                    transformed_pos = transform_to_screen_coordinates(body.position)
+                    distance_from_screen = transformed_pos[1]
+                    body_text = f"Distance: {distance_from_screen:.2f}m"
                     text_x = bb[0][0]
                     text_y = bb[0][1] - 10 if bb[0][1] > 30 else bb[0][1] + 20
                     cv2.putText(img, body_text, (text_x, text_y), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-                    # Hand detection and visualization
+                    # Hand detection and visualization (unchanged)
                     right_idx = sl.BODY_18_PARTS.RIGHT_WRIST.value
                     left_idx = sl.BODY_18_PARTS.LEFT_WRIST.value
                     
@@ -100,7 +117,7 @@ def main():
                         cv2.putText(img, lh_text, (lx+10, ly-20), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
 
-                    # Prepare data for UDP
+                    # Prepare data for UDP (unchanged)
                     right_hand_3d = body.keypoint[right_idx]
                     left_hand_3d = body.keypoint[left_idx]
 
@@ -124,7 +141,7 @@ def main():
 
                     user_data = {
                         "person_Id": str(body.id),
-                        "distance_from_screen": round(float(transform_to_screen_coordinates(body_pos)[2]), 2),
+                        "distance_from_screen": round(float(transformed_pos[2]), 2),
                         "right_hand": right_hand_data,
                         "left_hand": left_hand_data
                     }
