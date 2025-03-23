@@ -9,14 +9,11 @@ UDP_IP = "127.0.0.1"
 UDP_PORT = 5005
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-# Screen dimensions (in meters and pixels)
+# Screen dimensions
 SCREEN_WIDTH = 3.0
 SCREEN_HEIGHT = 6.0
 SCREEN_PIXEL_WIDTH = 1920
 SCREEN_PIXEL_HEIGHT = 1080
-
-# Touch detection threshold (in meters)
-TOUCH_THRESHOLD = 0.05
 
 CAMERA_TO_SCREEN_TRANSFORM = np.eye(4)
 
@@ -65,26 +62,26 @@ def main():
                 bodies = sl.Bodies()
                 zed.retrieve_bodies(bodies)
 
-                bodies_list = []
-                touches_list = []
-
+                users_data = []
                 for body in bodies.body_list:
                     # Body visualization
                     bb = body.bounding_box_2d.reshape((-1, 2)).astype(np.int32)
                     cv2.polylines(img, [bb], isClosed=True, color=(0, 255, 0), thickness=2)
                     
-                    # Show Z distance (depth) instead of Y
-                    body_text = f"Z: {body.position[2]:.2f}m"
+                    # Modified: Show distance from screen instead of body coordinates
+                    transformed_pos = transform_to_screen_coordinates(body.position)
+                    distance_from_screen = transformed_pos[1]
+                    body_text = f"Distance: {distance_from_screen:.2f}m"
                     text_x = bb[0][0]
                     text_y = bb[0][1] - 10 if bb[0][1] > 30 else bb[0][1] + 20
                     cv2.putText(img, body_text, (text_x, text_y), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-                    # Hand indices
+                    # Hand detection and visualization (unchanged)
                     right_idx = sl.BODY_18_PARTS.RIGHT_WRIST.value
                     left_idx = sl.BODY_18_PARTS.LEFT_WRIST.value
                     
-                    # Right hand visualization
+                    # Right hand
                     right_2d = body.keypoint_2d[right_idx]
                     if not np.isnan(right_2d).any():
                         rx, ry = right_2d.astype(int)
@@ -94,7 +91,7 @@ def main():
                         cv2.putText(img, rh_text, (rx-50, ry-20), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
 
-                    # Left hand visualization
+                    # Left hand
                     left_2d = body.keypoint_2d[left_idx]
                     if not np.isnan(left_2d).any():
                         lx, ly = left_2d.astype(int)
@@ -104,51 +101,38 @@ def main():
                         cv2.putText(img, lh_text, (lx+10, ly-20), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
 
-                    # Prepare body data
-                    body_data = {
-                        "person_id": str(body.id),
-                        "root": {
-                            "x": round(float(body.position[0]), 2),
-                            "y": round(float(body.position[1]), 2),
-                            "z": round(float(body.position[2]), 2)
-                        },
-                        "right_hand": None,
-                        "left_hand": None
-                    }
-
-                    # Right hand data
+                    # Prepare data for UDP (unchanged)
                     right_hand_3d = body.keypoint[right_idx]
+                    left_hand_3d = body.keypoint[left_idx]
+
+                    right_hand_data = None
                     if not np.isnan(right_hand_3d).any():
-                        body_data["right_hand"] = {
-                            "x": round(float(right_hand_3d[0]), 2),
-                            "y": round(float(right_hand_3d[1]), 2),
+                        right_hand_pixel = map_3d_to_screen_pixel(right_hand_3d)
+                        right_hand_data = {
+                            "x": int(right_hand_pixel[0]),
+                            "y": int(right_hand_pixel[1]),
                             "z": round(float(right_hand_3d[2]), 2)
                         }
 
-                    # Left hand data
-                    left_hand_3d = body.keypoint[left_idx]
+                    left_hand_data = None
                     if not np.isnan(left_hand_3d).any():
-                        body_data["left_hand"] = {
-                            "x": round(float(left_hand_3d[0]), 2),
-                            "y": round(float(left_hand_3d[1]), 2),
+                        left_hand_pixel = map_3d_to_screen_pixel(left_hand_3d)
+                        left_hand_data = {
+                            "x": int(left_hand_pixel[0]),
+                            "y": int(left_hand_pixel[1]),
                             "z": round(float(left_hand_3d[2]), 2)
                         }
 
-                    bodies_list.append(body_data)
-
-                    # Detect touches based on Z coordinate
-                    if body_data["right_hand"] and body_data["right_hand"]["z"] < TOUCH_THRESHOLD:
-                        touches_list.append({"person_id": str(body.id), "hand": "right_hand"})
-                    if body_data["left_hand"] and body_data["left_hand"]["z"] < TOUCH_THRESHOLD:
-                        touches_list.append({"person_id": str(body.id), "hand": "left_hand"})
-
-                # Send data via UDP if there are bodies detected
-                if bodies_list:
-                    data = {
-                        "bodies": bodies_list,
-                        "touches": touches_list
+                    user_data = {
+                        "person_Id": str(body.id),
+                        "distance_from_screen": round(float(transformed_pos[2]), 2),
+                        "right_hand": right_hand_data,
+                        "left_hand": left_hand_data
                     }
-                    sock.sendto(json.dumps(data).encode('utf-8'), (UDP_IP, UDP_PORT))
+                    users_data.append(user_data)
+
+                if users_data:
+                    sock.sendto(json.dumps(users_data).encode('utf-8'), (UDP_IP, UDP_PORT))
 
                 cv2.imshow("ZED Tracking", img)
                 if cv2.waitKey(1) == ord('q'):
