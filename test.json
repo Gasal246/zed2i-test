@@ -1,0 +1,50 @@
+{
+    "bodies": [
+      {
+        "person_id": "1",
+        "root": {
+          "x": <x_position>,
+          "y": <y_position>,
+          "z": <z_position>
+        },
+        "right_hand": {
+          "x": <x_position>,
+          "y": <y_position>, // closer to camera
+          "z": <z_position> // closer to camera
+        },
+        "left_hand": {
+          "x": <x_position>,
+          "y": <y_position>,
+          "z": <z_position>
+        }
+      },
+      {
+        "person_id": "2",
+        "root": {
+          "x": <x_position>,
+          "y": <y_position>,
+          "z": <z_position>
+        },
+        "right_hand": {
+          "x": <x_position>,
+          "y": <y_position>,
+          "z": <z_position>
+        },
+        "left_hand": {
+          "x": <x_position>,
+          "y": <y_position>, // close to camera
+          "z": <z_position> // close to camera
+        }
+      }
+    ],
+    "touches": [
+      {
+        "person_id": "1",
+        "hand": "right_hand"
+      },
+      {
+        "person_id": "2",
+        "hand": "left_hand"
+      }
+    ]
+  }

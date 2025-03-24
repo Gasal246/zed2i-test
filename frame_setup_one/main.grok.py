@@ -16,7 +16,7 @@ SCREEN_PIXEL_WIDTH = 1920
 SCREEN_PIXEL_HEIGHT = 1080
 
 # Touch detection threshold (in meters)
-TOUCH_THRESHOLD = 0.05
+TOUCH_THRESHOLD = -1.45
 
 CAMERA_TO_SCREEN_TRANSFORM = np.eye(4)
 
@@ -34,6 +34,7 @@ def map_3d_to_screen_pixel(position_3d):
     return (x_pixel, y_pixel)
 
 def main():
+    # Initialize ZED camera
     init_params = sl.InitParameters()
     init_params.camera_resolution = sl.RESOLUTION.HD1080
     init_params.coordinate_units = sl.UNIT.METER
@@ -59,9 +60,31 @@ def main():
     try:
         while True:
             if zed.grab(runtime_params) == sl.ERROR_CODE.SUCCESS:
+                # Retrieve image and depth
                 image = sl.Mat()
                 zed.retrieve_image(image, sl.VIEW.LEFT)
-                img = image.get_data()
+                img = image.get_data()  # Shape: (height, width, 4), BGRA
+                img_bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)  # Convert to BGR
+
+                depth = sl.Mat()
+                zed.retrieve_measure(depth, sl.MEASURE.DEPTH)
+                depth_data = depth.get_data()
+
+                # Create mask for touch threshold region (Z < TOUCH_THRESHOLD)
+                mask = (depth_data < TOUCH_THRESHOLD) & np.isfinite(depth_data)
+
+                # Create highlight image for threshold visualization
+                highlight = np.zeros_like(img_bgr)  # Shape: (height, width, 3)
+                highlight[mask] = [0, 255, 0]  # Green in BGR for touch zone
+
+                # Blend highlight with original image
+                img_with_highlight = cv2.addWeighted(img_bgr, 1, highlight, 0.5, 0)
+
+                # Add text label for clarity
+                cv2.putText(img_with_highlight, f"Touch zone: Z < {TOUCH_THRESHOLD:.2f} m", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+                # Retrieve and process bodies
                 bodies = sl.Bodies()
                 zed.retrieve_bodies(bodies)
 
@@ -71,13 +94,13 @@ def main():
                 for body in bodies.body_list:
                     # Body visualization
                     bb = body.bounding_box_2d.reshape((-1, 2)).astype(np.int32)
-                    cv2.polylines(img, [bb], isClosed=True, color=(0, 255, 0), thickness=2)
+                    cv2.polylines(img_with_highlight, [bb], isClosed=True, color=(0, 255, 0), thickness=2)
                     
-                    # Show Z distance (depth) instead of Y
+                    # Show Z distance (depth)
                     body_text = f"Z: {body.position[2]:.2f}m"
                     text_x = bb[0][0]
                     text_y = bb[0][1] - 10 if bb[0][1] > 30 else bb[0][1] + 20
-                    cv2.putText(img, body_text, (text_x, text_y), 
+                    cv2.putText(img_with_highlight, body_text, (text_x, text_y), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
                     # Hand indices
@@ -88,20 +111,20 @@ def main():
                     right_2d = body.keypoint_2d[right_idx]
                     if not np.isnan(right_2d).any():
                         rx, ry = right_2d.astype(int)
-                        cv2.rectangle(img, (rx-10, ry-10), (rx+10, ry+10), (0, 0, 255), 2)
+                        cv2.rectangle(img_with_highlight, (rx-10, ry-10), (rx+10, ry+10), (0, 0, 255), 2)
                         rh_pos = body.keypoint[right_idx]
                         rh_text = f"R: {rh_pos[0]:.2f}, {rh_pos[1]:.2f}, {rh_pos[2]:.2f}"
-                        cv2.putText(img, rh_text, (rx-50, ry-20), 
+                        cv2.putText(img_with_highlight, rh_text, (rx-50, ry-20), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
 
                     # Left hand visualization
                     left_2d = body.keypoint_2d[left_idx]
                     if not np.isnan(left_2d).any():
                         lx, ly = left_2d.astype(int)
-                        cv2.rectangle(img, (lx-10, ly-10), (lx+10, ly+10), (255, 0, 0), 2)
+                        cv2.rectangle(img_with_highlight, (lx-10, ly-10), (lx+10, ly+10), (255, 0, 0), 2)
                         lh_pos = body.keypoint[left_idx]
                         lh_text = f"L: {lh_pos[0]:.2f}, {lh_pos[1]:.2f}, {lh_pos[2]:.2f}"
-                        cv2.putText(img, lh_text, (lx+10, ly-20), 
+                        cv2.putText(img_with_highlight, lh_text, (lx+10, ly-20), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
 
                     # Prepare body data
@@ -137,9 +160,9 @@ def main():
                     bodies_list.append(body_data)
 
                     # Detect touches based on Z coordinate
-                    if body_data["right_hand"] and body_data["right_hand"]["z"] < TOUCH_THRESHOLD:
+                    if body_data["right_hand"] and body_data["right_hand"]["z"] > TOUCH_THRESHOLD:
                         touches_list.append({"person_id": str(body.id), "hand": "right_hand"})
-                    if body_data["left_hand"] and body_data["left_hand"]["z"] < TOUCH_THRESHOLD:
+                    if body_data["left_hand"] and body_data["left_hand"]["z"] > TOUCH_THRESHOLD:
                         touches_list.append({"person_id": str(body.id), "hand": "left_hand"})
 
                 # Send data via UDP if there are bodies detected
@@ -150,7 +173,8 @@ def main():
                     }
                     sock.sendto(json.dumps(data).encode('utf-8'), (UDP_IP, UDP_PORT))
 
-                cv2.imshow("ZED Tracking", img)
+                # Display the image with threshold and overlays
+                cv2.imshow("ZED Tracking", img_with_highlight)
                 if cv2.waitKey(1) == ord('q'):
                     break
 
