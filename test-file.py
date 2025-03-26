@@ -3,7 +3,7 @@ import numpy as np
 import json
 import socket
 import cv2
-import os
+import sys
 
 # UDP configuration
 UDP_IP = "127.0.0.1"
@@ -19,94 +19,104 @@ SCREEN_PIXEL_HEIGHT = 1080
 # Touch detection threshold (in meters)
 TOUCH_THRESHOLD = -1.45
 
-# Calibration file and parameters
-CALIBRATION_FILE = "calibration.npy"
-calibration_points = []
-homography_matrix = None
+class ScreenCalibration:
+    def __init__(self):
+        # Screen corner coordinates in camera 3D space (meters)
+        self.screen_corners_3d = None
+        # Screen corner coordinates in pixel space
+        self.screen_corners_pixel = None
+        # Homography matrix for transformation
+        self.homography_matrix = None
 
-def map_3d_to_screen_pixel(position_3d):
-    if homography_matrix is not None:
-        src_point = np.array([position_3d[0], position_3d[1], 1])
-        dst_point = np.dot(homography_matrix, src_point)
-        dst_point /= dst_point[2]
-        x_pixel = int(np.clip(dst_point[0], 0, SCREEN_PIXEL_WIDTH - 1))
-        y_pixel = int(np.clip(dst_point[1], 0, SCREEN_PIXEL_HEIGHT - 1))
-        return (x_pixel, y_pixel)
-    else:
-        return (0, 0)
+    def manual_calibration(self):
+        """
+        Manually calibrate screen corners by entering 3D coordinates 
+        and corresponding pixel coordinates.
+        """
+        print("Screen Calibration Process")
+        print("Please enter the 3D coordinates (in meters) for each screen corner:")
+        
+        self.screen_corners_3d = []
+        corner_names = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left"]
+        
+        for name in corner_names:
+            while True:
+                try:
+                    print(f"\nEnter {name} corner coordinates (x y z):")
+                    x = float(input("X coordinate (meters): "))
+                    y = float(input("Y coordinate (meters): "))
+                    z = float(input("Z coordinate (meters): "))
+                    self.screen_corners_3d.append([x, y, z])
+                    break
+                except ValueError:
+                    print("Invalid input. Please enter numeric values.")
+        
+        print("\nNow enter the corresponding pixel coordinates:")
+        self.screen_corners_pixel = []
+        
+        for name in corner_names:
+            while True:
+                try:
+                    print(f"\nEnter {name} corner pixel coordinates (x y):")
+                    x = int(input("X pixel coordinate: "))
+                    y = int(input("Y pixel coordinate: "))
+                    self.screen_corners_pixel.append([x, y])
+                    break
+                except ValueError:
+                    print("Invalid input. Please enter integer values.")
+        
+        # Calculate homography matrix
+        self.calculate_homography()
+        print("\nCalibration complete!")
 
-def click_event(event, x, y, flags, param):
-    global calibration_points
-    if event == cv2.EVENT_LBUTTONDOWN and len(calibration_points) < 4:
-        calibration_points.append((x, y))
-        print(f"Clicked point {len(calibration_points)}: ({x}, {y})")
+    def calculate_homography(self):
+        """
+        Calculate homography matrix for coordinate transformation.
+        """
+        if len(self.screen_corners_3d) != 4 or len(self.screen_corners_pixel) != 4:
+            raise ValueError("Need exactly 4 corners for homography calculation")
+        
+        # Convert to numpy arrays
+        src_pts = np.float32(self.screen_corners_3d[:, :2])  # Use only x and y
+        dst_pts = np.float32(self.screen_corners_pixel)
+        
+        # Calculate perspective transform
+        self.homography_matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
 
-def calibrate_camera(zed):
-    global homography_matrix
-    print("Starting calibration...")
-    print("Click four corners of the screen in order: Top-Left, Top-Right, Bottom-Right, Bottom-Left")
-
-    runtime_params = sl.RuntimeParameters()
-    image = sl.Mat()
-    depth = sl.Mat()
-    calibration_3d_points = []
-
-    cv2.namedWindow("Calibration")
-    cv2.setMouseCallback("Calibration", click_event)
-
-    while len(calibration_3d_points) < 4:
-        if zed.grab(runtime_params) == sl.ERROR_CODE.SUCCESS:
-            zed.retrieve_image(image, sl.VIEW.LEFT)
-            zed.retrieve_measure(depth, sl.MEASURE.DEPTH)
-            img = image.get_data()
-            img_bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-            
-            # Draw existing calibration points
-            for i, (px, py) in enumerate(calibration_points):
-                cv2.circle(img_bgr, (px, py), 10, (0, 255, 0) if i < len(calibration_3d_points) else (0, 0, 255), 2)
-                cv2.putText(img_bgr, str(i+1), (px+15, py+5), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
-            
-            # Process when we have new clicks
-            while len(calibration_points) > len(calibration_3d_points):
-                x, y = calibration_points[len(calibration_3d_points)]
-                err, point3d = depth.get_value(x, y)
-                if np.isfinite(point3d[2]):
-                    calibration_3d_points.append(point3d)
-                    print(f"3D point {len(calibration_3d_points)}: {point3d}")
-                else:
-                    print("Invalid depth at clicked point!")
-                    calibration_points.pop()
-
-            cv2.imshow("Calibration", img_bgr)
-            if cv2.waitKey(10) == ord('q'):
-                break
-
-    cv2.destroyAllWindows()
-
-    if len(calibration_3d_points) == 4:
-        # Define destination points (screen corners in pixels)
-        dst_points = np.array([
-            [0, 0],
-            [SCREEN_PIXEL_WIDTH, 0],
-            [SCREEN_PIXEL_WIDTH, SCREEN_PIXEL_HEIGHT],
-            [0, SCREEN_PIXEL_HEIGHT]
-        ], dtype=np.float32)
-
-        # Prepare source points (use x and z from 3D points assuming vertical screen)
-        src_points = np.array([[p[0], p[2]] for p in calibration_3d_points], dtype=np.float32)
-
-        # Calculate homography
-        homography, status = cv2.findHomography(src_points, dst_points)
-        if homography is not None:
-            np.save(CALIBRATION_FILE, homography)
-            homography_matrix = homography
-            print("Calibration completed successfully!")
-        else:
-            print("Failed to calculate homography")
+    def map_3d_to_screen_pixel(self, position_3d):
+        """
+        Map 3D camera coordinates to screen pixel coordinates.
+        """
+        if self.homography_matrix is None:
+            # Fallback to default linear mapping if no calibration
+            x_pixel = (position_3d[0] / SCREEN_WIDTH + 0.5) * SCREEN_PIXEL_WIDTH
+            y_pixel = (1 - (position_3d[1] / SCREEN_HEIGHT + 0.5)) * SCREEN_PIXEL_HEIGHT
+            x_pixel = max(0, min(SCREEN_PIXEL_WIDTH - 1, x_pixel))
+            y_pixel = max(0, min(SCREEN_PIXEL_HEIGHT - 1, y_pixel))
+            return (x_pixel, y_pixel)
+        
+        # Transform 3D point to homogeneous coordinates
+        point_2d = np.array([position_3d[0], position_3d[1], 1])
+        
+        # Apply homography
+        transformed_point = np.dot(self.homography_matrix, point_2d)
+        
+        # Normalize homogeneous coordinates
+        x = transformed_point[0] / transformed_point[2]
+        y = transformed_point[1] / transformed_point[2]
+        
+        # Clamp to screen boundaries
+        x = max(0, min(SCREEN_PIXEL_WIDTH - 1, x))
+        y = max(0, min(SCREEN_PIXEL_HEIGHT - 1, y))
+        
+        return (x, y)
 
 def main():
-    global homography_matrix
+    # Screen Calibration
+    calibration = ScreenCalibration()
+    
+    # Manually calibrate the screen
+    calibration.manual_calibration()
 
     # Initialize ZED camera
     init_params = sl.InitParameters()
@@ -119,17 +129,6 @@ def main():
         print("Error: Could not open ZED camera")
         exit(1)
 
-    # Check for existing calibration
-    if os.path.exists(CALIBRATION_FILE):
-        homography_matrix = np.load(CALIBRATION_FILE)
-        print("Loaded existing calibration")
-    else:
-        calibrate_camera(zed)
-        if homography_matrix is None:
-            print("Calibration failed, exiting")
-            exit(1)
-
-    # Rest of the tracking setup...
     tracking_params = sl.PositionalTrackingParameters()
     zed.enable_positional_tracking(tracking_params)
 
@@ -148,8 +147,26 @@ def main():
                 # Retrieve image and depth
                 image = sl.Mat()
                 zed.retrieve_image(image, sl.VIEW.LEFT)
-                img = image.get_data()
-                img_bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                img = image.get_data()  # Shape: (height, width, 4), BGRA
+                img_bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)  # Convert to BGR
+
+                depth = sl.Mat()
+                zed.retrieve_measure(depth, sl.MEASURE.DEPTH)
+                depth_data = depth.get_data()
+
+                # Create mask for touch threshold region (Z < TOUCH_THRESHOLD)
+                mask = (depth_data < TOUCH_THRESHOLD) & np.isfinite(depth_data)
+
+                # Create highlight image for threshold visualization
+                highlight = np.zeros_like(img_bgr)  # Shape: (height, width, 3)
+                highlight[mask] = [0, 255, 0]  # Green in BGR for touch zone
+
+                # Blend highlight with original image
+                img_with_highlight = cv2.addWeighted(img_bgr, 1, highlight, 0.5, 0)
+
+                # Add text label for clarity
+                cv2.putText(img_with_highlight, f"Touch zone: Z < {TOUCH_THRESHOLD:.2f} m", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
                 # Retrieve and process bodies
                 bodies = sl.Bodies()
@@ -159,7 +176,42 @@ def main():
                 touches_list = []
 
                 for body in bodies.body_list:
-                    # Get body data
+                    # Body visualization
+                    bb = body.bounding_box_2d.reshape((-1, 2)).astype(np.int32)
+                    cv2.polylines(img_with_highlight, [bb], isClosed=True, color=(0, 255, 0), thickness=2)
+                    
+                    # Show Z distance (depth)
+                    body_text = f"Z: {body.position[2]:.2f}m"
+                    text_x = bb[0][0]
+                    text_y = bb[0][1] - 10 if bb[0][1] > 30 else bb[0][1] + 20
+                    cv2.putText(img_with_highlight, body_text, (text_x, text_y), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+                    # Hand indices
+                    right_idx = sl.BODY_18_PARTS.RIGHT_WRIST.value
+                    left_idx = sl.BODY_18_PARTS.LEFT_WRIST.value
+                    
+                    # Right hand visualization
+                    right_2d = body.keypoint_2d[right_idx]
+                    if not np.isnan(right_2d).any():
+                        rx, ry = right_2d.astype(int)
+                        cv2.rectangle(img_with_highlight, (rx-10, ry-10), (rx+10, ry+10), (0, 0, 255), 2)
+                        rh_pos = body.keypoint[right_idx]
+                        rh_text = f"R: {rh_pos[0]:.2f}, {rh_pos[1]:.2f}, {rh_pos[2]:.2f}"
+                        cv2.putText(img_with_highlight, rh_text, (rx-50, ry-20), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+
+                    # Left hand visualization
+                    left_2d = body.keypoint_2d[left_idx]
+                    if not np.isnan(left_2d).any():
+                        lx, ly = left_2d.astype(int)
+                        cv2.rectangle(img_with_highlight, (lx-10, ly-10), (lx+10, ly+10), (255, 0, 0), 2)
+                        lh_pos = body.keypoint[left_idx]
+                        lh_text = f"L: {lh_pos[0]:.2f}, {lh_pos[1]:.2f}, {lh_pos[2]:.2f}"
+                        cv2.putText(img_with_highlight, lh_text, (lx+10, ly-20), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+
+                    # Prepare body data
                     body_data = {
                         "person_id": str(body.id),
                         "root": {
@@ -168,62 +220,52 @@ def main():
                             "z": round(float(body.position[2]), 2)
                         },
                         "right_hand": None,
-                        "left_hand": None,
-                        "screen_coords": {
-                            "root": None,
-                            "right_hand": None,
-                            "left_hand": None
-                        }
+                        "left_hand": None
                     }
 
-                    # Map root position to screen
-                    root_pixel = map_3d_to_screen_pixel(body.position)
-                    body_data["screen_coords"]["root"] = {
-                        "x": root_pixel[0],
-                        "y": root_pixel[1]
-                    }
-
-                    # Process hands
-                    right_idx = sl.BODY_18_PARTS.RIGHT_WRIST.value
-                    left_idx = sl.BODY_18_PARTS.LEFT_WRIST.value
-
-                    # Right hand
+                    # Right hand data
                     right_hand_3d = body.keypoint[right_idx]
                     if not np.isnan(right_hand_3d).any():
-                        rh_pixel = map_3d_to_screen_pixel(right_hand_3d)
+                        right_hand_pixel = calibration.map_3d_to_screen_pixel(right_hand_3d)
                         body_data["right_hand"] = {
                             "x": round(float(right_hand_3d[0]), 2),
                             "y": round(float(right_hand_3d[1]), 2),
-                            "z": round(float(right_hand_3d[2]), 2)
-                        }
-                        body_data["screen_coords"]["right_hand"] = {
-                            "x": rh_pixel[0],
-                            "y": rh_pixel[1]
+                            "z": round(float(right_hand_3d[2]), 2),
+                            "pixel_x": round(float(right_hand_pixel[0]), 2),
+                            "pixel_y": round(float(right_hand_pixel[1]), 2)
                         }
 
-                    # Left hand
+                    # Left hand data
                     left_hand_3d = body.keypoint[left_idx]
                     if not np.isnan(left_hand_3d).any():
-                        lh_pixel = map_3d_to_screen_pixel(left_hand_3d)
+                        left_hand_pixel = calibration.map_3d_to_screen_pixel(left_hand_3d)
                         body_data["left_hand"] = {
                             "x": round(float(left_hand_3d[0]), 2),
                             "y": round(float(left_hand_3d[1]), 2),
-                            "z": round(float(left_hand_3d[2]), 2)
-                        }
-                        body_data["screen_coords"]["left_hand"] = {
-                            "x": lh_pixel[0],
-                            "y": lh_pixel[1]
+                            "z": round(float(left_hand_3d[2]), 2),
+                            "pixel_x": round(float(left_hand_pixel[0]), 2),
+                            "pixel_y": round(float(left_hand_pixel[1]), 2)
                         }
 
                     bodies_list.append(body_data)
 
-                    # Touch detection
+                    # Detect touches based on Z coordinate
                     if body_data["right_hand"] and body_data["right_hand"]["z"] > TOUCH_THRESHOLD:
-                        touches_list.append({"person_id": str(body.id), "hand": "right_hand"})
+                        touches_list.append({
+                            "person_id": str(body.id), 
+                            "hand": "right_hand",
+                            "pixel_x": body_data["right_hand"]["pixel_x"],
+                            "pixel_y": body_data["right_hand"]["pixel_y"]
+                        })
                     if body_data["left_hand"] and body_data["left_hand"]["z"] > TOUCH_THRESHOLD:
-                        touches_list.append({"person_id": str(body.id), "hand": "left_hand"})
+                        touches_list.append({
+                            "person_id": str(body.id), 
+                            "hand": "left_hand",
+                            "pixel_x": body_data["left_hand"]["pixel_x"],
+                            "pixel_y": body_data["left_hand"]["pixel_y"]
+                        })
 
-                # Send data via UDP
+                # Send data via UDP if there are bodies detected
                 if bodies_list:
                     data = {
                         "bodies": bodies_list,
@@ -231,8 +273,8 @@ def main():
                     }
                     sock.sendto(json.dumps(data).encode('utf-8'), (UDP_IP, UDP_PORT))
 
-                # Display image
-                cv2.imshow("ZED Tracking", img_bgr)
+                # Display the image with threshold and overlays
+                cv2.imshow("ZED Tracking", img_with_highlight)
                 if cv2.waitKey(1) == ord('q'):
                     break
 
